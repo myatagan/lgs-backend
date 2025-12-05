@@ -4,8 +4,10 @@ from ai_model import generate_questions
 
 app = Flask(__name__)
 
-# 🔥 CORS tamamen açık, Live Server ile %100 uyumlu
-CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
+CORS(app,
+     resources={r"/*": {"origins": "*"}},
+     allow_headers=["Content-Type"],
+     methods=["GET", "POST", "OPTIONS"])
 
 # 🔹 DERS → KONU sözlüğü
 subjects = {
