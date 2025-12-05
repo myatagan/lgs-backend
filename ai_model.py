@@ -1,68 +1,82 @@
 import google.generativeai as genai
 import json
 import re
+
+# ----------------------------------------------------
+# 1) API KEY ENVIRONMENT VARIABLE ÜZERİNDEN ALINIYOR
+# ----------------------------------------------------
 import os
+genai.configure(api_key=os.getenv("GEMINI_API_KEY2"))
 
-# <-- ENVIRONMENT VARIABLE'DAN KEY AL!
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY2"))
+# RAM dostu, hızlı, düşük token tüketimli model:
+model = genai.GenerativeModel(
+    model_name="models/gemini-2.0-flash-lite",
+    generation_config={
+        "temperature": 0.4,
+        "max_output_tokens": 1200,   # RAM taşmasını engeller
+    }
+)
 
-model = genai.GenerativeModel("models/gemini-2.5-flash")
 
-
-
+# ----------------------------------------------------
+# 2) MODELİN ÜRETTİĞİ KARMAŞIK CEVAPTAN JSON'I AYIKLA
+# ----------------------------------------------------
 def extract_json(text):
     """
-    Model bazen JSON dışı konuşmalar eklediği için
-    cevap içindeki { ... } veya [ ... ] arasındaki
-    gerçek JSON bölümünü ayıklar.
+    Model bazen JSON dışı açıklama ekleyebilir.
+    Bu fonksiyon sadece köşeli parantez içindeki gerçek JSON'u ayıklar.
     """
-    match = re.search(r"(\[.*\]|\{.*\})", text, re.DOTALL)
+    match = re.search(r"(\[.*\])", text, re.DOTALL)
     if match:
         return match.group(1)
     return None
 
 
+# ----------------------------------------------------
+# 3) SORU ÜRETME FONKSİYONU
+# ----------------------------------------------------
 def generate_questions(lesson, topic, difficulty, count):
 
     prompt = f"""
-    Lütfen TAMAMEN aşağıdaki JSON formatında cevap üret.
+    SEN BİR LGS SORU ÜRETİCİSİN.
+    Sadece JSON çıktısı ver. Kod bloğu verme, açıklama yazma.
 
-    Kesin kurallar:
-    - Sadece JSON döndür (kod bloğu yok, açıklama yok)
-    - JSON dışına hiçbir karakter ekleme
-    - Sorular LISTE ([ ... ]) formatında olsun
+    AŞAĞIDAKİ FORMATTA {count} ADET SORU ÜRET:
 
-    Format:
     [
       {{
         "question": "Soru metni",
         "choices": ["A) ...", "B) ...", "C) ...", "D) ..."],
         "answer": "A",
-        "explanation": "Detaylı çözüm"
+        "explanation": "Çözüm"
       }}
     ]
 
-    Üretilecek soru sayısı: {count}
-    Ders: {lesson}
-    Konu: {topic}
-    Zorluk: {difficulty}
+    Kurallar:
+    - Asla JSON dışına çıkma
+    - Sorular MEB LGS formatında olsun
+    - Ders: {lesson}
+    - Konu: {topic}
+    - Zorluk: {difficulty}
     """
 
-    response = model.generate_content(prompt)
-    raw = response.text
+    try:
+        response = model.generate_content(prompt)
+    except Exception as e:
+        print("❌ MODEL ÇAĞRI HATASI:", e)
+        return {"error": "Model çağrısı başarısız oldu."}
 
-    # JSON kısmını ayıkla
+    raw = response.text or ""
     json_text = extract_json(raw)
 
     if not json_text:
-        print("❌ JSON bulunamadı:")
-        print(raw)
-        return {"error": "Model JSON formatında cevap döndüremedi."}
+        print("❌ JSON bulunamadı (ham veri):", raw[:300])
+        return {"error": "Model JSON formatında cevap üretemedi."}
 
     try:
-        data = json.loads(json_text)
-        return data
-    except:
-        print("❌ JSON parse edilemedi:")
-        print(json_text)
-        return {"error": "Model JSON formatında cevap döndüremedi."}
+        parsed = json.loads(json_text)
+        return parsed
+    except Exception as e:
+        print("❌ JSON parse hatası:", e)
+        print("Gelen JSON:", json_text)
+        return {"error": "JSON parse edilemedi."}
