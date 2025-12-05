@@ -1,10 +1,13 @@
 import google.generativeai as genai
 import json
 import re
+import os
 
-genai.configure(api_key="GEMINI_API_KEY2")
+# <-- ENVIRONMENT VARIABLE'DAN KEY AL!
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY2"))
 
 model = genai.GenerativeModel("models/gemini-2.5-flash")
+
 
 
 def extract_json(text):
