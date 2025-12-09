@@ -1,82 +1,83 @@
-import google.generativeai as genai
+import os
 import json
 import re
+import google.generativeai as genai
 
-# ----------------------------------------------------
-# 1) API KEY ENVIRONMENT VARIABLE ÜZERİNDEN ALINIYOR
-# ----------------------------------------------------
-import os
-genai.configure(api_key=os.getenv("GEMINI_API_KEY2"))
+# ✅ API key Render Environment Variable’dan alınır
+API_KEY = os.getenv("AIzaSyATnlSCTCp5Iithz7KCAWNP7flpJHVkGzw")
 
-# RAM dostu, hızlı, düşük token tüketimli model:
-model = genai.GenerativeModel(
-    model_name="models/gemini-2.0-flash-lite",
-    generation_config={
-        "temperature": 0.4,
-        "max_output_tokens": 1200,   # RAM taşmasını engeller
-    }
-)
+if not API_KEY:
+    raise ValueError("❌ GEMINI_API_KEY2 environment variable tanımlı değil!")
+
+genai.configure(api_key=API_KEY)
+
+# ✅ Hafif ve hızlı model (Render için ideal)
+model = genai.GenerativeModel("models/gemini-2.5-flash")
 
 
-# ----------------------------------------------------
-# 2) MODELİN ÜRETTİĞİ KARMAŞIK CEVAPTAN JSON'I AYIKLA
-# ----------------------------------------------------
+# ✅ Model bazen açıklama eklediği için sadece JSON kısmını ayıklayan fonksiyon
 def extract_json(text):
-    """
-    Model bazen JSON dışı açıklama ekleyebilir.
-    Bu fonksiyon sadece köşeli parantez içindeki gerçek JSON'u ayıklar.
-    """
-    match = re.search(r"(\[.*\])", text, re.DOTALL)
+    match = re.search(r"(\[\s*{.*}\s*\])", text, re.DOTALL)
     if match:
         return match.group(1)
     return None
 
 
-# ----------------------------------------------------
-# 3) SORU ÜRETME FONKSİYONU
-# ----------------------------------------------------
+# ✅ ANA SORU ÜRETİCİ
 def generate_questions(lesson, topic, difficulty, count):
 
     prompt = f"""
-    SEN BİR LGS SORU ÜRETİCİSİN.
-    Sadece JSON çıktısı ver. Kod bloğu verme, açıklama yazma.
+SADECE ve TAMAMEN aşağıdaki formatta JSON üret.
 
-    AŞAĞIDAKİ FORMATTA {count} ADET SORU ÜRET:
+❗ KURALLAR:
+- SADECE JSON üret
+- Açıklama, yorum, markdown YOK
+- Kod bloğu YOK
+- Dizi ([ ]) formatında olacak
 
-    [
-      {{
-        "question": "Soru metni",
-        "choices": ["A) ...", "B) ...", "C) ...", "D) ..."],
-        "answer": "A",
-        "explanation": "Çözüm"
-      }}
-    ]
+FORMAT:
+[
+  {{
+    "question": "Soru metni",
+    "choices": ["A) ...", "B) ...", "C) ...", "D) ..."],
+    "answer": "A",
+    "explanation": "Detaylı çözüm"
+  }}
+]
 
-    Kurallar:
-    - Asla JSON dışına çıkma
-    - Sorular MEB LGS formatında olsun
-    - Ders: {lesson}
-    - Konu: {topic}
-    - Zorluk: {difficulty}
-    """
-
-    try:
-        response = model.generate_content(prompt)
-    except Exception as e:
-        print("❌ MODEL ÇAĞRI HATASI:", e)
-        return {"error": "Model çağrısı başarısız oldu."}
-
-    raw = response.text or ""
-    json_text = extract_json(raw)
-
-    if not json_text:
-        print("❌ JSON bulunamadı (ham veri):", raw[:300])
-        return {"error": "Model JSON formatında cevap üretemedi."}
+ÜRETİLECEK SORU SAYISI: {count}
+DERS: {lesson}
+KONU: {topic}
+ZORLUK: {difficulty}
+"""
 
     try:
-        parsed = json.loads(json_text)
-        return parsed
+        response = model.generate_content(
+            prompt,
+            generation_config={
+                "temperature": 0.4,      # rastgelelik düşük → stabil çıktı
+                "max_output_tokens": 2048,  # RAM taşmasını önler
+            }
+        )
+
+        raw_text = response.text.strip()
+
+        json_text = extract_json(raw_text)
+
+        if not json_text:
+            print("❌ JSON bulunamadı:")
+            print(raw_text)
+            return {"error": "Model düzgün JSON üretmedi."}
+
+        try:
+            data = json.loads(json_text)
+            return data
+        except Exception as e:
+            print("❌ JSON parse hatası:", e)
+            print(json_text)
+            return {"error": "JSON parse edilemedi."}
+
     except Exception as e:
-        print("❌ JSON parse hatası:", e)
-        print("Gelen JSON:", json_text)
-        return {"error": "JSON parse edilemedi."}
+        print("❌ GEMINI API HATASI:", e)
+        return {"error": "Gemini API hatası oluştu."}
+
