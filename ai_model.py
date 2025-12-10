@@ -4,7 +4,7 @@ import re
 import google.generativeai as genai
 
 # ✅ API key Render Environment Variable’dan alınır
-API_KEY = os.getenv("AIzaSyATnlSCTCp5Iithz7KCAWNP7flpJHVkGzw")
+API_KEY = os.getenv("GEMINI_API_KEY2")
 
 if not API_KEY:
     raise ValueError("❌ GEMINI_API_KEY2 environment variable tanımlı değil!")
@@ -80,4 +80,5 @@ ZORLUK: {difficulty}
     except Exception as e:
         print("❌ GEMINI API HATASI:", e)
         return {"error": "Gemini API hatası oluştu."}
+
 
