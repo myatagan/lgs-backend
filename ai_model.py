@@ -1,9 +1,16 @@
-import os
+import google.generativeai as genai
 import json
 import re
-import google.generativeai as genai
+import os
 
+<<<<<<< HEAD
+# ==============================
+# 1. ENV'DEN API KEY OKU
+# ==============================
+
+=======
 # ✅ API key Render Environment Variable’dan alınır
+>>>>>>> 268ea07425ac331a34efae388259794914748e9d
 API_KEY = os.getenv("GEMINI_API_KEY2")
 
 if not API_KEY:
@@ -11,74 +18,74 @@ if not API_KEY:
 
 genai.configure(api_key=API_KEY)
 
-# ✅ Hafif ve hızlı model (Render için ideal)
+# ==============================
+# 2. MODEL SEÇ
+# ==============================
+
 model = genai.GenerativeModel("models/gemini-2.5-flash")
 
 
-# ✅ Model bazen açıklama eklediği için sadece JSON kısmını ayıklayan fonksiyon
+# ==============================
+# 3. JSON AYIKLAYICI
+# ==============================
+
 def extract_json(text):
-    match = re.search(r"(\[\s*{.*}\s*\])", text, re.DOTALL)
+    """
+    Model JSON dışı açıklama eklerse sadece gerçek JSON kısmını ayıklar.
+    """
+    match = re.search(r"(\[.*\])", text, re.DOTALL)
     if match:
         return match.group(1)
     return None
 
 
-# ✅ ANA SORU ÜRETİCİ
+# ==============================
+# 4. SORU ÜRETİCİ
+# ==============================
+
 def generate_questions(lesson, topic, difficulty, count):
 
     prompt = f"""
-SADECE ve TAMAMEN aşağıdaki formatta JSON üret.
+SADECE aşağıdaki formatta JSON üret.
+AÇIKLAMA EKLEME.
+KOD BLOĞU KULLANMA.
 
-❗ KURALLAR:
-- SADECE JSON üret
-- Açıklama, yorum, markdown YOK
-- Kod bloğu YOK
-- Dizi ([ ]) formatında olacak
-
-FORMAT:
 [
   {{
-    "question": "Soru metni",
+    "question": "Soru",
     "choices": ["A) ...", "B) ...", "C) ...", "D) ..."],
     "answer": "A",
     "explanation": "Detaylı çözüm"
   }}
 ]
 
-ÜRETİLECEK SORU SAYISI: {count}
-DERS: {lesson}
-KONU: {topic}
-ZORLUK: {difficulty}
+Ders: {lesson}
+Konu: {topic}
+Zorluk: {difficulty}
+Soru Sayısı: {count}
 """
 
+    response = model.generate_content(prompt)
+    raw_text = response.text.strip()
+
+    json_text = extract_json(raw_text)
+
+    if not json_text:
+        print("❌ JSON bulunamadı:")
+        print(raw_text)
+        return {"error": "Model JSON üretemedi"}
+
     try:
-        response = model.generate_content(
-            prompt,
-            generation_config={
-                "temperature": 0.4,      # rastgelelik düşük → stabil çıktı
-                "max_output_tokens": 2048,  # RAM taşmasını önler
-            }
-        )
-
-        raw_text = response.text.strip()
-
-        json_text = extract_json(raw_text)
-
-        if not json_text:
-            print("❌ JSON bulunamadı:")
-            print(raw_text)
-            return {"error": "Model düzgün JSON üretmedi."}
-
-        try:
-            data = json.loads(json_text)
-            return data
-        except Exception as e:
-            print("❌ JSON parse hatası:", e)
-            print(json_text)
-            return {"error": "JSON parse edilemedi."}
-
+        data = json.loads(json_text)
+        return data
     except Exception as e:
+<<<<<<< HEAD
+        print("❌ JSON parse hatası:", e)
+        print(json_text)
+        return {"error": "Model JSON formatında cevap döndüremedi"}
+=======
         print("❌ GEMINI API HATASI:", e)
         return {"error": "Gemini API hatası oluştu."}
 
 
+>>>>>>> 268ea07425ac331a34efae388259794914748e9d
