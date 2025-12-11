@@ -26,6 +26,7 @@ def generate_questions(lesson, topic, difficulty, count):
     Ünite veya ders ile ilişkili gibi olsa bile, sadece {topic} konusuna bağlı kal.
 
     Soru formatı kesinlikle şu JSON şeklinde olmalıdır:
+
     [
       {{
         "question": "Soru metni",
