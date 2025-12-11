@@ -1,54 +1,53 @@
-import os
 import google.generativeai as genai
+import os
 import json
-import re
 
-# ✅ API KEY ENV'DEN OKUNUYOR
+# API KEY'i Render Environment Variables üzerinden alıyoruz
 API_KEY = os.getenv("GEMINI_API_KEY2")
-
 if not API_KEY:
-    raise ValueError("❌ GEMINI_API_KEY2 environment variable TANIMLI DEĞİL!")
+    raise ValueError("❌ GEMINI_API_KEY2 environment variable tanımlı değil!")
 
 genai.configure(api_key=API_KEY)
 
-model = genai.GenerativeModel("models/gemini-2.5-flash")
-
-def extract_json(text):
-    match = re.search(r"(\[.*\])", text, re.DOTALL)
-    if match:
-        return match.group(1)
-    return None
+# JSON çıkışı zorlayan model ayarı
+model = genai.GenerativeModel(
+    "models/gemini-2.5-flash",
+    generation_config={
+        "response_mime_type": "application/json"
+    }
+)
 
 def generate_questions(lesson, topic, difficulty, count):
 
-    prompt = f"""
-    SADECE JSON DÖNDÜR. AÇIKLAMA YAZMA.
+    prompt = {
+        "lesson": lesson,
+        "topic": topic,
+        "difficulty": difficulty,
+        "count": count,
+        "instructions": """
+        Lütfen aşağıdaki JSON formatına TAM UYUMLU sorular üret:
 
-    FORMAT:
-    [
-      {{
-        "question": "Soru metni",
-        "choices": ["A) ...", "B) ...", "C) ...", "D) ..."],
-        "answer": "A",
-        "explanation": "Detaylı çözüm"
-      }}
-    ]
+        [
+          {
+            "question": "Soru metni",
+            "choices": ["A) ...", "B) ...", "C) ...", "D) ..."],
+            "answer": "A",
+            "explanation": "Detaylı çözüm"
+          }
+        ]
 
-    SORU SAYISI: {count}
-    DERS: {lesson}
-    KONU: {topic}
-    ZORLUK: {difficulty}
-    """
-
-    response = model.generate_content(prompt)
-    raw = response.text
-
-    json_text = extract_json(raw)
-
-    if not json_text:
-        return {"error": "❌ Model JSON üretmedi"}
+        - Kesinlikle metin açıklaması ekleme
+        - Kod bloğu ekleme
+        - JSON dışında tek bir karakter bile yazma
+        - Tüm sorular 4 şıklı olsun
+        """
+    }
 
     try:
-        return json.loads(json_text)
-    except:
-        return {"error": "❌ JSON parse edilemedi"}
+        response = model.generate_content(prompt)
+        result = json.loads(response.text)
+        return result
+
+    except Exception as e:
+        print("❌ JSON üretim hatası:", e)
+        return {"error": "Model düzgün JSON üretmedi."}
