@@ -2,17 +2,54 @@ import os
 import json
 import requests
 
+# ----------------------------------------------------------
+# 1) API KEY kontrolü
+# ----------------------------------------------------------
 API_KEY = os.getenv("GEMINI_API_KEY2")
 if not API_KEY:
     raise ValueError("❌ GEMINI_API_KEY2 environment variable tanımlı değil!")
 
+# Gemini Flash endpoint
 GEMINI_API_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     "gemini-2.5-flash:generateContent?key=" + API_KEY
 )
 
+
+# ----------------------------------------------------------
+# 2) JSON TAMİR EDİCİ FONKSİYON
+# ----------------------------------------------------------
+def fix_json(raw):
+    """Gemini'nın bozuk JSON çıktısını otomatik düzeltir."""
+
+    if not raw:
+        return raw
+
+    # Kod bloğu işaretlerini temizle
+    raw = raw.replace("```json", "").replace("```", "").strip()
+
+    # UTF-8 BOM karakterlerini temizle
+    raw = raw.encode("utf-8").decode("utf-8-sig")
+
+    # Tek tırnakları çift tırnağa çevir (JSON uyumluluğu için)
+    raw = raw.replace("'", '"')
+
+    # Eğer JSON dizi başlıyor ama kapanmıyorsa tamir et
+    if raw.startswith("[") and not raw.endswith("]"):
+        raw += "]"
+
+    # Fazla boşlukları temizle
+    raw = raw.strip()
+
+    return raw
+
+
+# ----------------------------------------------------------
+# 3) SORU ÜRETEN ANA FONKSİYON
+# ----------------------------------------------------------
 def generate_questions(lesson, topic, difficulty, count):
 
+    # --- MODEL PROMPTU ---
     prompt = f"""
     Sen bir 8. sınıf LGS soru üretme uzmanısın. Görevin yalnızca belirtilen konuya TAM UYUMLU,
     MEB kazanımlarına uygun sorular üretmektir.
@@ -37,32 +74,4 @@ def generate_questions(lesson, topic, difficulty, count):
     ]
 
     Kurallar:
-    - Sadece saf JSON üret.
-    - JSON dışında bir karakter bile ekleme.
-    - Kod bloğu kullanma.
-    - 'İşte sorular' gibi açıklama yazma.
-    - Sorular LGS MEB müfredat seviyesinde olmalı.
-    - Her şık mantıklı ve konuya uygun olmalı.
-    - Çözüm açıklaması gerçekten konuya dayanmalı.
-    - Soruları akademik, ölçme-değerlendirme mantığına uygun hazırla.
-
-    Şimdi sadece belirtilen konuya %100 uygun {count} adet soru üret.
-    """
-
-    payload = {
-        "contents": [
-            {"parts": [{"text": prompt}]}
-        ]
-    }
-
-    try:
-        response = requests.post(GEMINI_API_URL, json=payload)
-        data = response.json()
-
-        raw_output = data["candidates"][0]["content"]["parts"][0]["text"]
-
-        return json.loads(raw_output)
-
-    except Exception as e:
-        print("❌ JSON üretim hatası:", e)
-        return {"error": "Model düzgün JSON üretmedi."}
+    - Sadece saf JSON ür
