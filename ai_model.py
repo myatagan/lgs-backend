@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+import ast
 
 # ----------------------------------------------------------
 # 1) API KEY kontrolü
@@ -16,12 +17,13 @@ GEMINI_API_URL = (
 )
 
 # ----------------------------------------------------------
-# 2) JSON TEMİZLEYİCİ (artık hack yok)
+# 2) JSON TEMİZLEYİCİ
 # ----------------------------------------------------------
 def fix_json(raw: str) -> str:
     """
-    response_mime_type=application/json kullanıldığı için
-    gelen veri zaten saf JSON olmalı.
+    Model response'u string olarak gelir.
+    JSON veya Python/JS literal olabilir.
+    Burada sadece whitespace temizliyoruz.
     """
     if not raw:
         return raw
@@ -46,11 +48,11 @@ KESİNLİKLE belirtilen konu DIŞINDA soru üretme.
 Üniteyle ilişkili olsa bile sadece {topic} konusuna bağlı kal.
 
 ÇIKTI KURALLARI:
-- Yalnızca saf JSON üret
+- Yalnızca saf veri yapısı üret
 - Açıklama, yorum, metin EKLEME
 - Markdown, ```json KULLANMA
 
-JSON formatı TAM OLARAK şu yapıda olmalıdır:
+Çıktı formatı birebir şu yapıda olmalı:
 
 [
   {{
@@ -71,7 +73,7 @@ JSON formatı TAM OLARAK şu yapıda olmalıdır:
             }
         ],
         "generationConfig": {
-            "response_mime_type": "application/json",  # 🔥 KRİTİK
+            "response_mime_type": "application/json",
             "temperature": 0.7,
             "maxOutputTokens": 2048
         }
@@ -95,15 +97,31 @@ JSON formatı TAM OLARAK şu yapıda olmalıdır:
     # Gemini cevabını çek
     raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
 
-    # Artık sadece strip yeterli
     fixed = fix_json(raw_text)
 
-    # Parse et (deterministik)
+    # ----------------------------------------------------------
+    # 4) PARSE (JSON → olmazsa Python literal fallback)
+    # ----------------------------------------------------------
     try:
         questions = json.loads(fixed)
-    except json.JSONDecodeError as e:
-        raise ValueError(
-            f"❌ JSON parse edilemedi ({e})\n--- RAW JSON ---\n{fixed}"
-        )
+    except json.JSONDecodeError:
+        try:
+            # Gemini bazen tek tırnaklı Python/JS literal döndürüyor
+            questions = ast.literal_eval(fixed)
+        except Exception as e:
+            raise ValueError(
+                f"❌ JSON parse edilemedi (JSON + literal başarısız): {e}\n"
+                f"--- RAW RESPONSE ---\n{fixed}"
+            )
+
+    # ----------------------------------------------------------
+    # 5) ŞEMA DOĞRULAMA (koruyucu katman)
+    # ----------------------------------------------------------
+    if not isinstance(questions, list):
+        raise ValueError("❌ Model çıktısı liste değil")
+
+    for i, q in enumerate(questions):
+        if not all(k in q for k in ("question", "choices", "answer", "explanation")):
+            raise ValueError(f"❌ Eksik alanlar var (index {i}): {q}")
 
     return questions
