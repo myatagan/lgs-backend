@@ -16,27 +16,15 @@ GEMINI_API_URL = (
 )
 
 # ----------------------------------------------------------
-# 2) JSON TAMİR EDİCİ FONKSİYON
+# 2) JSON TEMİZLEYİCİ (artık hack yok)
 # ----------------------------------------------------------
-def fix_json(raw):
-    """Gemini'nın bozuk JSON çıktısını otomatik düzeltir."""
-
+def fix_json(raw: str) -> str:
+    """
+    response_mime_type=application/json kullanıldığı için
+    gelen veri zaten saf JSON olmalı.
+    """
     if not raw:
         return raw
-
-    # Kod bloğu işaretlerini temizle
-    raw = raw.replace("```json", "").replace("```", "").strip()
-
-    # UTF-8 BOM temizliği
-    raw = raw.encode("utf-8").decode("utf-8-sig")
-
-    # Tek tırnakları çift tırnağa çevir
-    raw = raw.replace("'", '"')
-
-    # JSON dizi kapanışı eksikse ekle
-    if raw.startswith("[") and not raw.endswith("]"):
-        raw += "]"
-
     return raw.strip()
 
 # ----------------------------------------------------------
@@ -81,7 +69,12 @@ JSON formatı TAM OLARAK şu yapıda olmalıdır:
                     {"text": prompt}
                 ]
             }
-        ]
+        ],
+        "generationConfig": {
+            "response_mime_type": "application/json",  # 🔥 KRİTİK
+            "temperature": 0.7,
+            "maxOutputTokens": 2048
+        }
     }
 
     headers = {
@@ -102,13 +95,15 @@ JSON formatı TAM OLARAK şu yapıda olmalıdır:
     # Gemini cevabını çek
     raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
 
-    # JSON'u düzelt
+    # Artık sadece strip yeterli
     fixed = fix_json(raw_text)
 
-    # Parse et
+    # Parse et (deterministik)
     try:
         questions = json.loads(fixed)
-    except json.JSONDecodeError:
-        raise ValueError(f"❌ JSON parse edilemedi:\n{fixed}")
+    except json.JSONDecodeError as e:
+        raise ValueError(
+            f"❌ JSON parse edilemedi ({e})\n--- RAW JSON ---\n{fixed}"
+        )
 
     return questions
