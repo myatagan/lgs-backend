@@ -30,7 +30,7 @@ def fix_json(raw: str) -> str:
     return raw.strip()
 
 # ----------------------------------------------------------
-# 3) SORU ÜRETEN ANA FONKSİYON
+# 3) SORU ÜRETEN ANA FONKSİYON (RETRY'Lİ)
 # ----------------------------------------------------------
 def generate_questions(lesson, topic, difficulty, count):
 
@@ -47,10 +47,13 @@ Soru Sayısı: {count}
 KESİNLİKLE belirtilen konu DIŞINDA soru üretme.
 Üniteyle ilişkili olsa bile sadece {topic} konusuna bağlı kal.
 
-ÇIKTI KURALLARI:
+ÇIKTI KURALLARI (KRİTİK):
 - Yalnızca saf veri yapısı üret
 - Açıklama, yorum, metin EKLEME
 - Markdown, ```json KULLANMA
+- Metinlerde çift tırnak (") KULLANMA
+- Satır sonu karakteri (\\n) KULLANMA
+- Tüm metinler TEK SATIR olmalı
 
 Çıktı formatı birebir şu yapıda olmalı:
 
@@ -59,7 +62,7 @@ KESİNLİKLE belirtilen konu DIŞINDA soru üretme.
     "question": "Soru metni",
     "choices": ["A) ...", "B) ...", "C) ...", "D) ..."],
     "answer": "A",
-    "explanation": "Detaylı çözüm"
+    "explanation": "Detayli cozum"
   }}
 ]
 """
@@ -74,8 +77,9 @@ KESİNLİKLE belirtilen konu DIŞINDA soru üretme.
         ],
         "generationConfig": {
             "response_mime_type": "application/json",
-            "temperature": 0.7,
-            "maxOutputTokens": 2048
+            "temperature": 0.4,      # 🔥 düşürüldü
+            "topP": 0.8,
+            "maxOutputTokens": 1500  # 🔥 kısıtlandı
         }
     }
 
@@ -83,45 +87,53 @@ KESİNLİKLE belirtilen konu DIŞINDA soru üretme.
         "Content-Type": "application/json"
     }
 
-    response = requests.post(
-        GEMINI_API_URL,
-        headers=headers,
-        json=payload,
-        timeout=60
-    )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    # Gemini cevabını çek
-    raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-
-    fixed = fix_json(raw_text)
-
     # ----------------------------------------------------------
-    # 4) PARSE (JSON → olmazsa Python literal fallback)
+    # 4) RETRY MEKANİZMASI (3 DENEME)
     # ----------------------------------------------------------
-    try:
-        questions = json.loads(fixed)
-    except json.JSONDecodeError:
+    last_error = None
+
+    for attempt in range(1, 4):
         try:
-            # Gemini bazen tek tırnaklı Python/JS literal döndürüyor
-            questions = ast.literal_eval(fixed)
-        except Exception as e:
-            raise ValueError(
-                f"❌ JSON parse edilemedi (JSON + literal başarısız): {e}\n"
-                f"--- RAW RESPONSE ---\n{fixed}"
+            response = requests.post(
+                GEMINI_API_URL,
+                headers=headers,
+                json=payload,
+                timeout=60
             )
 
-    # ----------------------------------------------------------
-    # 5) ŞEMA DOĞRULAMA (koruyucu katman)
-    # ----------------------------------------------------------
-    if not isinstance(questions, list):
-        raise ValueError("❌ Model çıktısı liste değil")
+            response.raise_for_status()
+            data = response.json()
 
-    for i, q in enumerate(questions):
-        if not all(k in q for k in ("question", "choices", "answer", "explanation")):
-            raise ValueError(f"❌ Eksik alanlar var (index {i}): {q}")
+            raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+            fixed = fix_json(raw_text)
 
-    return questions
+            # Önce JSON dene
+            try:
+                questions = json.loads(fixed)
+            except json.JSONDecodeError:
+                # Olmazsa Python/JS literal dene
+                questions = ast.literal_eval(fixed)
+
+            # ----------------------------------------------------------
+            # 5) ŞEMA DOĞRULAMA
+            # ----------------------------------------------------------
+            if not isinstance(questions, list):
+                raise ValueError("Model çıktısı liste değil")
+
+            for i, q in enumerate(questions):
+                if not all(k in q for k in ("question", "choices", "answer", "explanation")):
+                    raise ValueError(f"Eksik alanlar var (index {i})")
+
+            return questions  # ✅ BAŞARILI
+
+        except Exception as e:
+            last_error = e
+            continue  # bir sonraki denemeye geç
+
+    # ----------------------------------------------------------
+    # 6) 3 DENEME DE BAŞARISIZ
+    # ----------------------------------------------------------
+    raise ValueError(
+        f"❌ Model 3 denemede de geçerli çıktı üretemedi.\n"
+        f"Son hata: {last_error}"
+    )
