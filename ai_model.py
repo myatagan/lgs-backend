@@ -1,101 +1,98 @@
+from flask import Flask, request, jsonify
+from flask_cors import CORS
 import os
-import requests
-import re
-import time
 
-API_KEY = os.getenv("GEMINI_API_KEY2")
-if not API_KEY:
-    raise ValueError("❌ GEMINI_API_KEY2 environment variable tanımlı değil!")
+from ai_model import generate_questions
 
-GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.5-flash:generateContent?key=" + API_KEY
+app = Flask(__name__)
+
+# CORS (Netlify domainini env ile yönetmek daha temiz)
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://lgssorubankasi.netlify.app").split(",")
+
+CORS(
+    app,
+    resources={r"/*": {"origins": [o.strip() for o in ALLOWED_ORIGINS]}},
+    supports_credentials=False,
+    methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"]
 )
 
-# ----------------------------------------------------------
-# 1) MODELİ TEK SORU ÜRETMEYE ZORLA
-# ----------------------------------------------------------
-def generate_one_question(lesson, topic, difficulty):
-    prompt = f"""
-Sen bir 8. sınıf LGS soru üretme uzmanısın.
+# -------------------------
+# Küçük yardımcılar
+# -------------------------
+def _as_int(value, default=None):
+    """'5' gibi stringleri güvenle int'e çevirir."""
+    if value is None or value == "":
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
-Ders: {lesson}
-Konu: {topic}
-Zorluk: {difficulty}
+def _bad_request(msg):
+    return jsonify({"ok": False, "error": msg}), 400
 
-AŞAĞIDAKİ FORMAT DIŞINA ASLA ÇIKMA.
-Satır sırasını bozma, ek metin yazma.
+# -------------------------
+# Sağlık kontrolü
+# -------------------------
+@app.get("/")
+def home():
+    return jsonify({"ok": True, "message": "LGS Soru Bankası API çalışıyor."})
 
-Soru: ...
-A) ...
-B) ...
-C) ...
-D) ...
-Cevap: A
-Çözüm: ...
-"""
+@app.get("/favicon.ico")
+def favicon():
+    # Tarayıcıların otomatik isteği (404 spam olmasın)
+    return ("", 204)
 
-    payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": 500
-        }
-    }
+# -------------------------
+# Asıl endpoint
+# -------------------------
+@app.route("/generate", methods=["POST", "OPTIONS"])
+def generate():
+    # CORS preflight (flask-cors çoğunu halleder ama garanti olsun)
+    if request.method == "OPTIONS":
+        return ("", 204)
 
-    r = requests.post(GEMINI_API_URL, json=payload, timeout=60)
-    r.raise_for_status()
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    data = request.get_json(silent=True) or {}
+
+    lesson = (data.get("lesson") or "").strip()
+    topic = (data.get("topic") or "").strip()
+    difficulty = (data.get("difficulty") or "").strip()
+    count = _as_int(data.get("count"), default=None)
+
+    # Zorunlu alan kontrolleri
+    if not lesson:
+        return _bad_request("lesson alanı zorunlu.")
+    if not topic:
+        return _bad_request("topic alanı zorunlu.")
+    if not difficulty:
+        return _bad_request("difficulty alanı zorunlu.")
+    if count is None:
+        return _bad_request("count alanı sayı olmalı (örn: 5).")
+
+    # Güvenlik/performans sınırları
+    # (Render free/mini planlarda RAM/CPU kısıtlı → limit şart)
+    if count < 1:
+        return _bad_request("count en az 1 olmalı.")
+    if count > 10:
+        # Çok soru aynı anda model çağrısı demek; 10 üstünü kesiyoruz
+        count = 10
+
+    try:
+        questions = generate_questions(
+            lesson=lesson,
+            topic=topic,
+            difficulty=difficulty,
+            count=count
+        )
+        return jsonify({"ok": True, "questions": questions})
+
+    except Exception as e:
+        # Yanıltıcı “VERİ TABANI” vs. yok. Gerçek hata.
+        app.logger.exception("Generate error")
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
-# ----------------------------------------------------------
-# 2) SAĞLAM REGEX PARSER
-# ----------------------------------------------------------
-def parse_question(text):
-    def find(pattern):
-        m = re.search(pattern, text, re.MULTILINE)
-        return m.group(1).strip() if m else ""
-
-    question = find(r"^Soru:\s*(.+)$")
-
-    choices = [
-        "A) " + find(r"^A[\)\.\s]\s*(.+)$"),
-        "B) " + find(r"^B[\)\.\s]\s*(.+)$"),
-        "C) " + find(r"^C[\)\.\s]\s*(.+)$"),
-        "D) " + find(r"^D[\)\.\s]\s*(.+)$")
-    ]
-
-    answer = find(r"^Cevap:\s*([A-D])$")
-    explanation = find(r"^Çözüm:\s*(.+)$")
-
-    # ZORUNLU DOĞRULAMA
-    if not question or not answer or any(c.endswith(") ") for c in choices):
-        raise ValueError("❌ Eksik veya bozuk soru üretildi")
-
-    return {
-        "question": question,
-        "choices": choices,
-        "answer": answer,
-        "explanation": explanation
-    }
-
-
-# ----------------------------------------------------------
-# 3) ÇOKLU SORU + RETRY MEKANİZMASI
-# ----------------------------------------------------------
-def generate_questions(lesson, topic, difficulty, count):
-    questions = []
-
-    for i in range(count):
-        for attempt in range(3):  # 🔁 retry
-            try:
-                raw = generate_one_question(lesson, topic, difficulty)
-                q = parse_question(raw)
-                questions.append(q)
-                break
-            except Exception:
-                time.sleep(0.5)
-        else:
-            raise ValueError("❌ Model geçerli soru üretemedi")
-
-    return questions
+if __name__ == "__main__":
+    # Local test
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
