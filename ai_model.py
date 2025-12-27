@@ -3,8 +3,6 @@ from flask_cors import CORS
 import os
 import time
 
-from ai_model import generate_questions
-
 app = Flask(__name__)
 
 # -------------------------------------------------
@@ -101,6 +99,9 @@ def generate():
         count = 10  # üst sınır
 
     try:
+        # 🔥 CIRCULAR IMPORT KIRICI HAMLE
+        from ai_model import generate_questions
+
         questions = generate_questions(
             lesson=lesson,
             topic=topic,
@@ -119,3 +120,11 @@ def generate():
             "ok": False,
             "error": str(e)
         }), 500
+
+
+if __name__ == "__main__":
+    app.run(
+        host="0.0.0.0",
+        port=int(os.getenv("PORT", "5000")),
+        debug=True
+    )
