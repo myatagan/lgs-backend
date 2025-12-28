@@ -55,30 +55,48 @@ Cevap: A
 # PARSE
 # -------------------------------------------------
 def parse_question(text):
-    def find(pattern):
-        m = re.search(pattern, text, re.MULTILINE)
-        return m.group(1).strip() if m else ""
+    def find(patterns):
+        for p in patterns:
+            m = re.search(p, text, re.IGNORECASE | re.MULTILINE)
+            if m:
+                return m.group(1).strip()
+        return ""
 
-    question = find(r"^Soru:\s*(.+)$")
+    question = find([
+        r"^Soru\s*:\s*(.+)$"
+    ])
 
     choices = [
-        "A) " + find(r"^A[\)\.\s]\s*(.+)$"),
-        "B) " + find(r"^B[\)\.\s]\s*(.+)$"),
-        "C) " + find(r"^C[\)\.\s]\s*(.+)$"),
-        "D) " + find(r"^D[\)\.\s]\s*(.+)$")
+        "A) " + find([r"^A[\)\.\-\s]\s*(.+)$"]),
+        "B) " + find([r"^B[\)\.\-\s]\s*(.+)$"]),
+        "C) " + find([r"^C[\)\.\-\s]\s*(.+)$"]),
+        "D) " + find([r"^D[\)\.\-\s]\s*(.+)$"]),
     ]
 
-    answer = find(r"^Cevap:\s*([A-D])$")
-    explanation = find(r"^Çözüm:\s*(.+)$")
+    answer = find([
+        r"^Cevap\s*:\s*([A-D])$",
+        r"^Doğru\s*Cevap\s*:\s*([A-D])$"
+    ])
 
-    if not question or not answer or any(c.endswith(") ") for c in choices):
-        raise ValueError("Eksik veya bozuk soru üretildi")
+    explanation = find([
+        r"^Çözüm\s*:\s*(.+)$",
+        r"^Çözümü\s*:\s*(.+)$",
+        r"^Açıklama\s*:\s*(.+)$"
+    ])
+
+    # Minimum güvenlik
+    if not question or not answer:
+        raise ValueError("Soru veya cevap bulunamadı")
+
+    # Şıklar boşsa, yine hata
+    if any(len(c.strip()) <= 3 for c in choices):
+        raise ValueError("Şıklar eksik")
 
     return {
         "question": question,
         "choices": choices,
         "answer": answer,
-        "explanation": explanation
+        "explanation": explanation or "Çözüm bilgisi verilmemiştir."
     }
 
 # -------------------------------------------------
@@ -86,17 +104,19 @@ def parse_question(text):
 # -------------------------------------------------
 def generate_questions(lesson, topic, difficulty, count):
     questions = []
+    max_total_attempts = count * 5  # üst sınır
 
-    for _ in range(count):
-        for attempt in range(3):
-            try:
-                raw = generate_one_question(lesson, topic, difficulty)
-                q = parse_question(raw)
-                questions.append(q)
-                break
-            except Exception:
-                time.sleep(0.5)
-        else:
-            raise ValueError("Model geçerli soru üretemedi")
+    attempts = 0
+    while len(questions) < count and attempts < max_total_attempts:
+        attempts += 1
+        try:
+            raw = generate_one_question(lesson, topic, difficulty)
+            q = parse_question(raw)
+            questions.append(q)
+        except Exception:
+            time.sleep(0.4)
+
+    if not questions:
+        raise ValueError("Hiç geçerli soru üretilemedi")
 
     return questions
