@@ -1,131 +1,102 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
 import os
+import requests
+import re
 import time
 
-app = Flask(__name__)
-
 # -------------------------------------------------
-# CORS (Netlify → Render)
+# API KEY
 # -------------------------------------------------
-ALLOWED_ORIGINS = os.getenv(
-    "ALLOWED_ORIGINS",
-    "https://lgssorubankasi.netlify.app"
-).split(",")
+API_KEY = os.getenv("GEMINI_API_KEY2")
+if not API_KEY:
+    raise ValueError("❌ GEMINI_API_KEY2 environment variable tanımlı değil!")
 
-CORS(
-    app,
-    resources={r"/*": {"origins": [o.strip() for o in ALLOWED_ORIGINS]}},
-    methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"]
+GEMINI_API_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.5-flash:generateContent?key=" + API_KEY
 )
 
 # -------------------------------------------------
-# Rate limit (basit ama etkili)
+# TEK SORU ÜRET
 # -------------------------------------------------
-LAST_CALL_TIME = 0
-MIN_INTERVAL = 2  # saniye
+def generate_one_question(lesson, topic, difficulty):
+    prompt = f"""
+Sen bir 8. sınıf LGS soru üretme uzmanısın.
 
-def rate_limited():
-    global LAST_CALL_TIME
-    now = time.time()
-    if now - LAST_CALL_TIME < MIN_INTERVAL:
-        return True
-    LAST_CALL_TIME = now
-    return False
+Ders: {lesson}
+Konu: {topic}
+Zorluk: {difficulty}
 
-# -------------------------------------------------
-# Yardımcılar
-# -------------------------------------------------
-def bad_request(msg):
-    return jsonify({"ok": False, "error": msg}), 400
+AŞAĞIDAKİ FORMAT DIŞINA ASLA ÇIKMA.
+Satır sırasını bozma, ek metin yazma.
 
-def to_int(val):
-    try:
-        return int(val)
-    except (TypeError, ValueError):
-        return None
+Soru: ...
+A) ...
+B) ...
+C) ...
+D) ...
+Cevap: A
+Çözüm: ...
+"""
 
-# -------------------------------------------------
-# Sağlık & gürültü kesiciler
-# -------------------------------------------------
-@app.get("/")
-def home():
-    return jsonify({"ok": True, "message": "LGS Soru Bankası API çalışıyor."})
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 500
+        }
+    }
 
-@app.get("/health")
-def health():
-    return jsonify({"status": "ok"})
+    r = requests.post(GEMINI_API_URL, json=payload, timeout=60)
+    r.raise_for_status()
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
-@app.get("/favicon.ico")
-def favicon():
-    return ("", 204)
 
 # -------------------------------------------------
-# ANA ENDPOINT
+# PARSE
 # -------------------------------------------------
-@app.route("/generate", methods=["POST", "OPTIONS"])
-def generate():
-    if request.method == "OPTIONS":
-        return ("", 204)
+def parse_question(text):
+    def find(pattern):
+        m = re.search(pattern, text, re.MULTILINE)
+        return m.group(1).strip() if m else ""
 
-    if rate_limited():
-        return jsonify({
-            "ok": False,
-            "error": "Çok hızlı istek. Lütfen 2 saniye bekleyin."
-        }), 429
+    question = find(r"^Soru:\s*(.+)$")
 
-    data = request.get_json(silent=True) or {}
+    choices = [
+        "A) " + find(r"^A[\)\.\s]\s*(.+)$"),
+        "B) " + find(r"^B[\)\.\s]\s*(.+)$"),
+        "C) " + find(r"^C[\)\.\s]\s*(.+)$"),
+        "D) " + find(r"^D[\)\.\s]\s*(.+)$")
+    ]
 
-    lesson = (data.get("lesson") or "").strip()
-    topic = (data.get("topic") or "").strip()
-    difficulty = (data.get("difficulty") or "").strip()
-    count = to_int(data.get("count"))
+    answer = find(r"^Cevap:\s*([A-D])$")
+    explanation = find(r"^Çözüm:\s*(.+)$")
 
-    # Zorunlu alan kontrolleri
-    if not lesson:
-        return bad_request("lesson alanı zorunlu.")
-    if not topic:
-        return bad_request("topic alanı zorunlu.")
-    if not difficulty:
-        return bad_request("difficulty alanı zorunlu.")
-    if count is None:
-        return bad_request("count geçerli bir sayı olmalı.")
+    if not question or not answer or any(c.endswith(") ") for c in choices):
+        raise ValueError("Eksik veya bozuk soru üretildi")
 
-    # Güvenlik sınırları
-    if count < 1:
-        return bad_request("count en az 1 olmalı.")
-    if count > 10:
-        count = 10  # üst sınır
+    return {
+        "question": question,
+        "choices": choices,
+        "answer": answer,
+        "explanation": explanation
+    }
 
-    try:
-        # 🔥 CIRCULAR IMPORT KIRICI HAMLE
-        from ai_model import generate_questions
+# -------------------------------------------------
+# ÇOKLU SORU + RETRY
+# -------------------------------------------------
+def generate_questions(lesson, topic, difficulty, count):
+    questions = []
 
-        questions = generate_questions(
-            lesson=lesson,
-            topic=topic,
-            difficulty=difficulty,
-            count=count
-        )
+    for _ in range(count):
+        for attempt in range(3):
+            try:
+                raw = generate_one_question(lesson, topic, difficulty)
+                q = parse_question(raw)
+                questions.append(q)
+                break
+            except Exception:
+                time.sleep(0.5)
+        else:
+            raise ValueError("Model geçerli soru üretemedi")
 
-        return jsonify({
-            "ok": True,
-            "questions": questions
-        })
-
-    except Exception as e:
-        app.logger.exception("Generate error")
-        return jsonify({
-            "ok": False,
-            "error": str(e)
-        }), 500
-
-
-if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", "5000")),
-        debug=True
-    )
-# 🔥 deneme
+    return questions
