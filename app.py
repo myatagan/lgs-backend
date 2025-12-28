@@ -21,10 +21,10 @@ CORS(
 )
 
 # -------------------------------------------------
-# Rate limit (çok basit koruma)
+# Rate limit (yumuşatılmış)
 # -------------------------------------------------
 LAST_CALL_TIME = 0
-MIN_INTERVAL = 2  # saniye
+MIN_INTERVAL = 1.5  # saniye
 
 def rate_limited():
     global LAST_CALL_TIME
@@ -38,7 +38,7 @@ def rate_limited():
 # Yardımcılar
 # -------------------------------------------------
 def bad_request(msg):
-    return jsonify({"ok": False, "error": msg}), 400
+    return jsonify({"ok": False, "error": msg, "questions": []}), 400
 
 def to_int(val):
     try:
@@ -70,10 +70,12 @@ def generate():
         return ("", 204)
 
     if rate_limited():
+        # ❗ 429 YERİNE 200 → frontend akışı bozulmaz
         return jsonify({
             "ok": False,
-            "error": "Çok hızlı istek. Lütfen 2 saniye bekleyin."
-        }), 429
+            "error": "Çok hızlı istek. Lütfen 2 saniye bekleyin.",
+            "questions": []
+        }), 200
 
     data = request.get_json(silent=True) or {}
 
@@ -82,23 +84,19 @@ def generate():
     difficulty = (data.get("difficulty") or "").strip()
     count = to_int(data.get("count"))
 
-    # Zorunlu alanlar
     if not lesson:
         return bad_request("lesson alanı zorunlu.")
     if not topic:
         return bad_request("topic alanı zorunlu.")
     if not difficulty:
         return bad_request("difficulty alanı zorunlu.")
-    if count is None:
+    if count is None or count < 1:
         return bad_request("count geçerli bir sayı olmalı.")
 
-    if count < 1:
-        return bad_request("count en az 1 olmalı.")
     if count > 10:
         count = 10
 
     try:
-        # 🔥 Lazy import → circular kesin biter
         from ai_model import generate_questions
 
         questions = generate_questions(
@@ -111,14 +109,16 @@ def generate():
         return jsonify({
             "ok": True,
             "questions": questions
-        })
+        }), 200
 
     except Exception as e:
+        # 🔥 ARTIK ASLA 500 YOK
         app.logger.exception("Generate error")
         return jsonify({
             "ok": False,
-            "error": str(e)
-        }), 500
+            "error": str(e),
+            "questions": []
+        }), 200
 
 
 if __name__ == "__main__":
