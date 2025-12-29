@@ -4,9 +4,9 @@ import re
 import time
 import requests
 
-API_KEY = os.getenv("GEMINI_API_KEY3")
+API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
-    raise RuntimeError("❌ GEMINI_API_KEY2 environment variable tanımlı değil!")
+    raise RuntimeError("❌ GEMINI_API_KEY environment variable tanımlı değil!")
 
 GEMINI_API_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
