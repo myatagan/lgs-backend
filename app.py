@@ -2,99 +2,50 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import os
 import time
+import requests
 
 app = Flask(__name__)
 
-# -------------------------------------------------
-# CORS
-# -------------------------------------------------
-ALLOWED_ORIGINS = os.getenv(
-    "ALLOWED_ORIGINS",
-    "https://lgssorubankasi.netlify.app"
-).split(",")
+CORS(app, resources={r"/*": {"origins": "*"}})
 
-CORS(
-    app,
-    resources={r"/*": {"origins": [o.strip() for o in ALLOWED_ORIGINS]}},
-    methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"]
-)
+LAST_CALL = 0
+MIN_INTERVAL = 5  # saniye (çok önemli)
 
-# -------------------------------------------------
-# Rate limit (yumuşatılmış)
-# -------------------------------------------------
-LAST_CALL_TIME = 0
-MIN_INTERVAL = 1.5  # saniye
 
 def rate_limited():
-    global LAST_CALL_TIME
+    global LAST_CALL
     now = time.time()
-    if now - LAST_CALL_TIME < MIN_INTERVAL:
+    if now - LAST_CALL < MIN_INTERVAL:
         return True
-    LAST_CALL_TIME = now
+    LAST_CALL = now
     return False
 
-# -------------------------------------------------
-# Yardımcılar
-# -------------------------------------------------
-def bad_request(msg):
-    return jsonify({"ok": False, "error": msg, "questions": []}), 400
 
-def to_int(val):
-    try:
-        return int(val)
-    except (TypeError, ValueError):
-        return None
-
-# -------------------------------------------------
-# Sağlık endpointleri
-# -------------------------------------------------
 @app.get("/")
 def home():
-    return jsonify({"ok": True, "message": "LGS Soru Bankası API çalışıyor."})
+    return jsonify({"ok": True})
 
-@app.get("/health")
-def health():
-    return jsonify({"status": "ok"})
 
-@app.get("/favicon.ico")
-def favicon():
-    return ("", 204)
-
-# -------------------------------------------------
-# ANA ENDPOINT
-# -------------------------------------------------
 @app.route("/generate", methods=["POST", "OPTIONS"])
 def generate():
     if request.method == "OPTIONS":
         return ("", 204)
 
     if rate_limited():
-        # ❗ 429 YERİNE 200 → frontend akışı bozulmaz
         return jsonify({
             "ok": False,
-            "error": "Çok hızlı istek. Lütfen 2 saniye bekleyin.",
-            "questions": []
-        }), 200
+            "error": "Çok hızlı istek. Lütfen birkaç saniye bekleyin."
+        }), 429
 
     data = request.get_json(silent=True) or {}
 
-    lesson = (data.get("lesson") or "").strip()
-    topic = (data.get("topic") or "").strip()
-    difficulty = (data.get("difficulty") or "").strip()
-    count = to_int(data.get("count"))
+    lesson = data.get("lesson")
+    topic = data.get("topic")
+    difficulty = data.get("difficulty")
+    count = data.get("count")
 
-    if not lesson:
-        return bad_request("lesson alanı zorunlu.")
-    if not topic:
-        return bad_request("topic alanı zorunlu.")
-    if not difficulty:
-        return bad_request("difficulty alanı zorunlu.")
-    if count is None or count < 1:
-        return bad_request("count geçerli bir sayı olmalı.")
-
-    if count > 10:
-        count = 10
+    if not all([lesson, topic, difficulty, count]):
+        return jsonify({"ok": False, "error": "Eksik alan"}), 400
 
     try:
         from ai_model import generate_questions
@@ -106,24 +57,22 @@ def generate():
             count=count
         )
 
-        return jsonify({
-            "ok": True,
-            "questions": questions
-        }), 200
+        return jsonify({"ok": True, "questions": questions})
+
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 429:
+            return jsonify({
+                "ok": False,
+                "error": "AI rate limit aşıldı. 1 dakika sonra deneyin."
+            }), 429
+        raise
 
     except Exception as e:
-        # 🔥 ARTIK ASLA 500 YOK
-        app.logger.exception("Generate error")
         return jsonify({
             "ok": False,
-            "error": str(e),
-            "questions": []
-        }), 200
+            "error": str(e)
+        }), 500
 
 
 if __name__ == "__main__":
-    app.run(
-        host="0.0.0.0",
-        port=int(os.getenv("PORT", "5000")),
-        debug=True
-    )
+    app.run(host="0.0.0.0", port=5000)
