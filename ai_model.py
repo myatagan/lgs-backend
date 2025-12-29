@@ -4,7 +4,7 @@ import re
 import time
 import requests
 
-API_KEY = os.getenv("GEMINI_API_KEY2")
+API_KEY = os.getenv("GEMINI_API_KEY3")
 if not API_KEY:
     raise RuntimeError("❌ GEMINI_API_KEY2 environment variable tanımlı değil!")
 
