@@ -1,88 +1,104 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-import time
+import os
+import json
 import requests
 
-app = Flask(__name__)
+API_KEY = os.getenv("GEMINI_API_KEY")
+if not API_KEY:
+    raise RuntimeError("GEMINI API KEY tanımlı değil")
 
-CORS(app, resources={r"/*": {"origins": "*"}})
+GEMINI_API_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/models/"
+    "gemini-2.5-flash:generateContent?key=" + API_KEY
+)
 
-LAST_CALL = 0
-MIN_INTERVAL = 5  # saniye
-
-
-def rate_limited():
-    global LAST_CALL
-    now = time.time()
-    if now - LAST_CALL < MIN_INTERVAL:
-        return True
-    LAST_CALL = now
-    return False
+HEADERS = {"Content-Type": "application/json"}
 
 
-@app.get("/")
-def home():
-    return jsonify({"ok": True})
+def extract_json_array(text: str) -> str:
+    """
+    LLM çıktısından ilk [ ... ] bloğunu güvenle çıkarır.
+    JSON öncesi/sonrası metinleri yok sayar.
+    """
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("JSON array bulunamadı")
+    return text[start:end + 1]
 
 
-@app.route("/generate", methods=["POST", "OPTIONS"])
-def generate():
-    if request.method == "OPTIONS":
-        return ("", 204)
+def generate_questions(lesson, topic, difficulty, count):
+    try:
+        count = int(count)
+    except Exception:
+        raise ValueError("count sayıya çevrilemedi")
 
-    if rate_limited():
-        return jsonify({
-            "ok": False,
-            "error": "Çok hızlı istek. Lütfen birkaç saniye bekleyin."
-        }), 429
+    prompt = f"""
+You are an exam question generator for 8th grade LGS.
 
-    data = request.get_json(silent=True) or {}
+Lesson: {lesson}
+Topic: {topic}
+Difficulty: {difficulty}
+Number of questions: {count}
 
-    lesson = data.get("lesson")
-    topic = data.get("topic")
-    difficulty = data.get("difficulty")
-    count = data.get("count")
+STRICT RULES:
+- Output ONLY valid JSON
+- No markdown
+- No explanation text outside JSON
 
-    if not all([lesson, topic, difficulty, count]):
-        return jsonify({
-            "ok": False,
-            "error": "Eksik alan"
-        }), 400
+FORMAT:
+[
+  {{
+    "question": "...",
+    "choices": ["A) ...", "B) ...", "C) ...", "D) ..."],
+    "answer": "A",
+    "explanation": "..."
+  }}
+]
+"""
+
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.3,
+            "maxOutputTokens": 2000,
+            "response_mime_type": "application/json"
+        }
+    }
+
+    response = requests.post(
+        GEMINI_API_URL,
+        headers=HEADERS,
+        json=payload,
+        timeout=60
+    )
+
+    response.raise_for_status()
+
+    data = response.json()
+
+    # 🔒 GÜVENLİ OKUMA
+    candidates = data.get("candidates", [])
+    if not candidates:
+        raise ValueError("Model candidate üretmedi")
+
+    content = candidates[0].get("content", {})
+    parts = content.get("parts", [])
+    if not parts:
+        raise ValueError("Model content boş döndü")
+
+    raw = parts[0].get("text", "").strip()
+    if not raw:
+        raise ValueError("Model text üretmedi")
+
+    # 🔥 ASIL KRİTİK HAMLE
+    clean = extract_json_array(raw)
 
     try:
-        from ai_model import generate_questions
+        questions = json.loads(clean)
+    except Exception:
+        raise ValueError("Model geçerli JSON üretemedi")
 
-        questions = generate_questions(
-            lesson=lesson,
-            topic=topic,
-            difficulty=difficulty,
-            count=count
-        )
+    if not isinstance(questions, list) or len(questions) == 0:
+        raise ValueError("Model boş soru döndürdü")
 
-        return jsonify({
-            "ok": True,
-            "questions": questions
-        })
-
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 429:
-            return jsonify({
-                "ok": False,
-                "error": "AI rate limit aşıldı. Lütfen bekleyin."
-            }), 429
-        raise
-
-    except Exception as e:
-        # 🔥 BU SATIR SAYESİNDE ARTIK RENDER LOG BOŞ KALMAZ
-        app.logger.exception("🔥 Generate endpoint error")
-
-        # 🔥 500 YERİNE KONTROLLÜ BAŞARISIZLIK
-        return jsonify({
-            "ok": False,
-            "error": str(e),
-            "questions": []
-        }), 200
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+    return questions[:count]

@@ -14,6 +14,18 @@ GEMINI_API_URL = (
 HEADERS = {"Content-Type": "application/json"}
 
 
+def extract_json_array(text: str) -> str:
+    """
+    LLM çıktısından ilk [ ... ] bloğunu güvenle çıkarır.
+    JSON öncesi/sonrası metinleri yok sayar.
+    """
+    start = text.find("[")
+    end = text.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("JSON array bulunamadı")
+    return text[start:end + 1]
+
+
 def generate_questions(lesson, topic, difficulty, count):
     try:
         count = int(count)
@@ -64,7 +76,7 @@ FORMAT:
 
     data = response.json()
 
-    # 🔒 GÜVENLİ OKUMA (EN KRİTİK DÜZELTME)
+    # 🔒 GÜVENLİ OKUMA
     candidates = data.get("candidates", [])
     if not candidates:
         raise ValueError("Model candidate üretmedi")
@@ -78,9 +90,11 @@ FORMAT:
     if not raw:
         raise ValueError("Model text üretmedi")
 
-    # JSON parse
+    # 🔥 ASIL KRİTİK HAMLE
+    clean = extract_json_array(raw)
+
     try:
-        questions = json.loads(raw)
+        questions = json.loads(clean)
     except Exception:
         raise ValueError("Model geçerli JSON üretemedi")
 
