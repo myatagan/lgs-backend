@@ -15,7 +15,10 @@ HEADERS = {"Content-Type": "application/json"}
 
 
 def generate_questions(lesson, topic, difficulty, count):
-    count = int(count)
+    try:
+        count = int(count)
+    except Exception:
+        raise ValueError("count sayıya çevrilemedi")
 
     prompt = f"""
 You are an exam question generator for 8th grade LGS.
@@ -59,8 +62,23 @@ FORMAT:
 
     response.raise_for_status()
 
-    raw = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+    data = response.json()
 
+    # 🔒 GÜVENLİ OKUMA (EN KRİTİK DÜZELTME)
+    candidates = data.get("candidates", [])
+    if not candidates:
+        raise ValueError("Model candidate üretmedi")
+
+    content = candidates[0].get("content", {})
+    parts = content.get("parts", [])
+    if not parts:
+        raise ValueError("Model content boş döndü")
+
+    raw = parts[0].get("text", "").strip()
+    if not raw:
+        raise ValueError("Model text üretmedi")
+
+    # JSON parse
     try:
         questions = json.loads(raw)
     except Exception:
