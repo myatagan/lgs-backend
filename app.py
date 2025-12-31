@@ -84,6 +84,6 @@ def generate():
         }), 200
 
 
-# ❗ BU BLOK GUNICORN İÇİN ŞART DEĞİL AMA ZARARSIZ
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
