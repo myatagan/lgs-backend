@@ -1,7 +1,11 @@
 import os
 import requests
 import re
+import time
 
+# ============================
+# GEMINI CONFIG
+# ============================
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     raise RuntimeError("GEMINI_API_KEY tanımlı değil")
@@ -14,6 +18,9 @@ GEMINI_API_URL = (
 HEADERS = {"Content-Type": "application/json"}
 
 
+# ============================
+# LOW LEVEL CALL (SAFE)
+# ============================
 def _call_gemini(prompt: str) -> str:
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
@@ -23,16 +30,26 @@ def _call_gemini(prompt: str) -> str:
         }
     }
 
-    r = requests.post(
-        GEMINI_API_URL,
-        headers=HEADERS,
-        json=payload,
-        timeout=60
-    )
-    r.raise_for_status()
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    try:
+        r = requests.post(
+            GEMINI_API_URL,
+            headers=HEADERS,
+            json=payload,
+            timeout=15  # 🔥 WORKER ÖLDÜRMEYEN TIMEOUT
+        )
+        r.raise_for_status()
+        return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+
+    except requests.exceptions.Timeout:
+        raise RuntimeError("AI isteği zaman aşımına uğradı")
+
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"AI bağlantı hatası: {e}")
 
 
+# ============================
+# PARSE ONE QUESTION
+# ============================
 def _parse_question_block(text: str):
     def find(pattern):
         m = re.search(pattern, text, re.DOTALL)
@@ -62,6 +79,9 @@ def _parse_question_block(text: str):
     }
 
 
+# ============================
+# MAIN ENTRY
+# ============================
 def generate_questions(lesson, topic, difficulty, count):
     count = int(count)
     questions = []
@@ -87,12 +107,18 @@ SADECE BU FORMATI KULLAN.
 """
 
     attempts = 0
-    while len(questions) < count and attempts < count * 2:
+    max_attempts = count * 2  # 🔥 güvenli retry
+
+    while len(questions) < count and attempts < max_attempts:
         attempts += 1
+
         raw = _call_gemini(prompt)
         q = _parse_question_block(raw)
+
         if q:
             questions.append(q)
+
+        time.sleep(0.4)  # 🔥 Gemini rate limit + stabilite
 
     if not questions:
         raise ValueError("Model geçerli soru üretemedi")
