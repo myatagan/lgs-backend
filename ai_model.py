@@ -1,10 +1,10 @@
 import os
-import json
 import requests
+import re
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
-    raise RuntimeError("GEMINI API KEY tanımlı değil")
+    raise RuntimeError("GEMINI_API_KEY tanımlı değil")
 
 GEMINI_API_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
@@ -14,91 +14,87 @@ GEMINI_API_URL = (
 HEADERS = {"Content-Type": "application/json"}
 
 
-def extract_json_array(text: str) -> str:
-    """
-    LLM çıktısından ilk [ ... ] bloğunu güvenle çıkarır.
-    JSON öncesi/sonrası metinleri yok sayar.
-    """
-    start = text.find("[")
-    end = text.rfind("]")
-    if start == -1 or end == -1 or end <= start:
-        raise ValueError("JSON array bulunamadı")
-    return text[start:end + 1]
-
-
-def generate_questions(lesson, topic, difficulty, count):
-    try:
-        count = int(count)
-    except Exception:
-        raise ValueError("count sayıya çevrilemedi")
-
-    prompt = f"""
-You are an exam question generator for 8th grade LGS.
-
-Lesson: {lesson}
-Topic: {topic}
-Difficulty: {difficulty}
-Number of questions: {count}
-
-STRICT RULES:
-- Output ONLY valid JSON
-- No markdown
-- No explanation text outside JSON
-
-FORMAT:
-[
-  {{
-    "question": "...",
-    "choices": ["A) ...", "B) ...", "C) ...", "D) ..."],
-    "answer": "A",
-    "explanation": "..."
-  }}
-]
-"""
-
+def _call_gemini(prompt: str) -> str:
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": 2000,
-            "response_mime_type": "application/json"
+            "temperature": 0.4,
+            "maxOutputTokens": 1200
         }
     }
 
-    response = requests.post(
+    r = requests.post(
         GEMINI_API_URL,
         headers=HEADERS,
         json=payload,
         timeout=60
     )
+    r.raise_for_status()
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
-    response.raise_for_status()
 
-    data = response.json()
+def _parse_question_block(text: str):
+    def find(pattern):
+        m = re.search(pattern, text, re.DOTALL)
+        return m.group(1).strip() if m else None
 
-    # 🔒 GÜVENLİ OKUMA
-    candidates = data.get("candidates", [])
-    if not candidates:
-        raise ValueError("Model candidate üretmedi")
+    question = find(r"Soru:\s*(.*)")
+    A = find(r"A\)\s*(.*)")
+    B = find(r"B\)\s*(.*)")
+    C = find(r"C\)\s*(.*)")
+    D = find(r"D\)\s*(.*)")
+    answer = find(r"Cevap:\s*([A-D])")
+    explanation = find(r"Çözüm:\s*(.*)")
 
-    content = candidates[0].get("content", {})
-    parts = content.get("parts", [])
-    if not parts:
-        raise ValueError("Model content boş döndü")
+    if not all([question, A, B, C, D, answer, explanation]):
+        return None
 
-    raw = parts[0].get("text", "").strip()
-    if not raw:
-        raise ValueError("Model text üretmedi")
+    return {
+        "question": question,
+        "choices": [
+            f"A) {A}",
+            f"B) {B}",
+            f"C) {C}",
+            f"D) {D}",
+        ],
+        "answer": answer,
+        "explanation": explanation
+    }
 
-    # 🔥 ASIL KRİTİK HAMLE
-    clean = extract_json_array(raw)
 
-    try:
-        questions = json.loads(clean)
-    except Exception:
-        raise ValueError("Model geçerli JSON üretemedi")
+def generate_questions(lesson, topic, difficulty, count):
+    count = int(count)
+    questions = []
 
-    if not isinstance(questions, list) or len(questions) == 0:
-        raise ValueError("Model boş soru döndürdü")
+    prompt = f"""
+Sen bir 8. sınıf LGS soru üretme uzmanısın.
 
-    return questions[:count]
+Ders: {lesson}
+Konu: {topic}
+Zorluk: {difficulty}
+
+Her soruyu AŞAĞIDAKİ FORMATTA üret:
+
+Soru: ...
+A) ...
+B) ...
+C) ...
+D) ...
+Cevap: A
+Çözüm: ...
+
+SADECE BU FORMATI KULLAN.
+"""
+
+    attempts = 0
+    while len(questions) < count and attempts < count * 2:
+        attempts += 1
+        raw = _call_gemini(prompt)
+        q = _parse_question_block(raw)
+        if q:
+            questions.append(q)
+
+    if not questions:
+        raise ValueError("Model geçerli soru üretemedi")
+
+    return questions
