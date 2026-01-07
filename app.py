@@ -1,18 +1,17 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import time
-import requests
 
 app = Flask(__name__)
 
-# ✅ CORS – Netlify için açık
+# ✅ CORS – Netlify demo için açık
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # -----------------------------
-# Rate limit (backend tarafı)
+# Rate limit (backend)
 # -----------------------------
 LAST_CALL = 0
-MIN_INTERVAL = 5  # saniye
+MIN_INTERVAL = 2  # ⬅️ 5 yerine 2 saniye
 
 def rate_limited():
     global LAST_CALL
@@ -25,19 +24,23 @@ def rate_limited():
 
 @app.get("/")
 def home():
-    return jsonify({"ok": True, "message": "LGS API running"})
+    return jsonify({
+        "ok": True,
+        "message": "LGS Question Generator API is running"
+    })
 
 
 @app.route("/generate", methods=["POST", "OPTIONS"])
 def generate():
+    # Preflight
     if request.method == "OPTIONS":
         return ("", 204)
 
     if rate_limited():
         return jsonify({
             "ok": False,
-            "error": "Çok hızlı istek. Lütfen birkaç saniye bekleyin.",
             "retryable": True,
+            "error": "Too many requests. Please wait a moment.",
             "questions": []
         }), 200
 
@@ -48,14 +51,16 @@ def generate():
     difficulty = data.get("difficulty")
     count = data.get("count")
 
+    # Basit validasyon
     if not all([lesson, topic, difficulty, count]):
         return jsonify({
             "ok": False,
-            "error": "Eksik alan",
+            "error": "Missing required fields",
             "questions": []
         }), 200
 
     try:
+        # 🔥 OpenRouter kullanan ai_model
         from ai_model import generate_questions
 
         questions = generate_questions(
@@ -70,22 +75,13 @@ def generate():
             "questions": questions
         }), 200
 
-    # 🔥 Gemini 429 / 503 YUMUŞATMA
-    except requests.exceptions.HTTPError as e:
-        if e.response is not None and e.response.status_code in (429, 503):
-            app.logger.warning("AI temporary unavailable")
-            return jsonify({
-                "ok": False,
-                "retryable": True,
-                "error": "AI servis geçici olarak yoğun. 1-2 dakika sonra tekrar deneyin.",
-                "questions": []
-            }), 200
-        raise
-
     except Exception as e:
+        # 🔥 ARTIK HER HATA LOG’LANIYOR
         app.logger.exception("LLM generation failed")
+
         return jsonify({
             "ok": False,
+            "retryable": True,
             "error": str(e),
             "questions": []
         }), 200

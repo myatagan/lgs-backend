@@ -1,107 +1,164 @@
 import os
-import requests
+import json
 import re
 import time
+import requests
 
-API_KEY = os.getenv("GEMINI_API_KEY")
-if not API_KEY:
-    raise RuntimeError("GEMINI_API_KEY tanımlı değil")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+if not OPENROUTER_API_KEY:
+    raise RuntimeError("OPENROUTER_API_KEY tanımlı değil (Render env'e ekle).")
 
-GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.5-flash:generateContent?key=" + API_KEY
-)
+# OpenRouter Chat Completions endpoint
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
-HEADERS = {"Content-Type": "application/json"}
+HEADERS = {
+    "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+    "Content-Type": "application/json",
+    # Bu header'lar opsiyonel ama önerilir
+    "HTTP-Referer": "https://lgssorubankasi.netlify.app",
+    "X-Title": "LGS Soru Bankasi",
+}
+
+# Ücretsiz/istikrarlı seçeneklerden biri:
+# "mistralai/mistral-7b-instruct" genelde iyi çalışır.
+MODEL = os.getenv("OPENROUTER_MODEL", "mistralai/mistral-7b-instruct")
 
 
-def _call_gemini(prompt: str) -> str:
+def _strip_code_fences(s: str) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"^```(?:json)?\s*", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s*```$", "", s)
+    return s.strip()
+
+
+def _extract_json_array(s: str) -> str:
+    s = _strip_code_fences(s)
+    first = s.find("[")
+    last = s.rfind("]")
+    if first != -1 and last != -1 and last > first:
+        return s[first:last + 1].strip()
+    return s
+
+
+def _try_json_loads(s: str):
+    s = _extract_json_array(s)
+
+    # Akıllı tırnak düzeltmeleri
+    s = s.replace("“", '"').replace("”", '"').replace("’", "'").replace("‘", "'")
+
+    # trailing comma düzelt
+    s = re.sub(r",\s*([}\]])", r"\1", s)
+
+    return json.loads(s)
+
+
+def _call_openrouter(prompt: str, temperature: float = 0.2, max_tokens: int = 1800) -> str:
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0.3,
-            "maxOutputTokens": 1000
-        }
+        "model": MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a strict generator. "
+                    "You MUST output only valid JSON with no extra text."
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": temperature,
+        "max_tokens": max_tokens,
     }
 
-    r = requests.post(
-        GEMINI_API_URL,
-        headers=HEADERS,
-        json=payload,
-        timeout=12  # 🔥 worker öldürmez
-    )
-    r.raise_for_status()
-    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    # Render/gunicorn timeout yememek için kısa timeout + retry
+    last_err = None
+    for _ in range(3):
+        try:
+            r = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=20)
+            r.raise_for_status()
+            data = r.json()
+            return data["choices"][0]["message"]["content"]
+        except Exception as e:
+            last_err = e
+            time.sleep(0.5)
+
+    raise RuntimeError(f"OpenRouter çağrısı başarısız: {last_err}")
 
 
 def generate_questions(lesson, topic, difficulty, count):
     count = int(count)
-    questions = []
 
     prompt = f"""
-Sen bir 8. sınıf LGS soru üretme uzmanısın.
+You are an exam question generator for 8th grade LGS (Turkey).
 
-Ders: {lesson}
-Konu: {topic}
-Zorluk: {difficulty}
+Lesson: {lesson}
+Topic: {topic}
+Difficulty: {difficulty}
+Number of questions: {count}
 
-Her soruyu AŞAĞIDAKİ FORMATTA üret:
+STRICT OUTPUT RULES:
+- Output ONLY valid JSON (no markdown, no commentary).
+- Output MUST be a JSON array.
+- Each item MUST have these exact keys:
+  - "question" (string)
+  - "choices" (array of 4 strings starting with A) B) C) D))
+  - "answer" (one of "A","B","C","D")
+  - "explanation" (string)
 
-Soru: ...
-A) ...
-B) ...
-C) ...
-D) ...
-Cevap: A
-Çözüm: ...
-
-SADECE BU FORMATTA ÇIKTI VER.
+EXAMPLE:
+[
+  {{
+    "question": "....",
+    "choices": ["A) ...", "B) ...", "C) ...", "D) ..."],
+    "answer": "A",
+    "explanation": "..."
+  }}
+]
 """
 
-    attempts = 0
-    max_attempts = count * 2
+    # 1) üret
+    raw = _call_openrouter(prompt, temperature=0.25, max_tokens=2000)
 
-    while len(questions) < count and attempts < max_attempts:
-        attempts += 1
+    # 2) parse
+    try:
+        questions = _try_json_loads(raw)
+    except Exception:
+        # 3) repair prompt (aynı modelle düzelt)
+        repair_prompt = f"""
+Fix the following content into STRICT JSON only.
 
-        raw = _call_gemini(prompt)
+Output MUST be a JSON array of objects with EXACT keys:
+question (string), choices (array of 4 strings), answer ("A"-"D"), explanation (string).
+No markdown. No extra text.
 
-        q = _parse_question(raw)
-        if q:
-            questions.append(q)
+CONTENT:
+{raw}
+"""
+        repaired = _call_openrouter(repair_prompt, temperature=0.0, max_tokens=2000)
+        questions = _try_json_loads(repaired)
 
-        time.sleep(0.5)  # 🔥 Gemini dostu
+    # Şema doğrulama + temizlik
+    if not isinstance(questions, list) or len(questions) == 0:
+        raise ValueError("Model boş/geçersiz çıktı üretti")
 
-    if not questions:
-        raise ValueError("Model geçerli soru üretemedi")
+    cleaned = []
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        if not all(k in q for k in ("question", "choices", "answer", "explanation")):
+            continue
+        if not isinstance(q["choices"], list) or len(q["choices"]) != 4:
+            continue
+        if str(q["answer"]).strip() not in ("A", "B", "C", "D"):
+            continue
 
-    return questions[:count]
+        cleaned.append({
+            "question": str(q["question"]).strip(),
+            "choices": [str(c).strip() for c in q["choices"]],
+            "answer": str(q["answer"]).strip(),
+            "explanation": str(q["explanation"]).strip(),
+        })
 
+    if not cleaned:
+        raise ValueError("Model geçerli soru üretemedi (şema dışı çıktı)")
 
-def _parse_question(text: str):
-    def find(p):
-        m = re.search(p, text, re.DOTALL)
-        return m.group(1).strip() if m else None
-
-    question = find(r"Soru:\s*(.*)")
-    A = find(r"A\)\s*(.*)")
-    B = find(r"B\)\s*(.*)")
-    C = find(r"C\)\s*(.*)")
-    D = find(r"D\)\s*(.*)")
-    answer = find(r"Cevap:\s*([A-D])")
-    explanation = find(r"Çözüm:\s*(.*)")
-
-    if not all([question, A, B, C, D, answer, explanation]):
-        return None
-
-    return {
-        "question": question,
-        "choices": [
-            f"A) {A}",
-            f"B) {B}",
-            f"C) {C}",
-            f"D) {D}"
-        ],
-        "answer": answer,
-        "explanation": explanation
-    }
+    return cleaned[:count]
