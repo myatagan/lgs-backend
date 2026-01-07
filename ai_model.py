@@ -1,12 +1,10 @@
 import os
 import requests
 import re
-import time
-from typing import Optional, Dict, List
 
-# ============================
+# ==================================================
 # GEMINI CONFIG
-# ============================
+# ==================================================
 API_KEY = os.getenv("GEMINI_API_KEY")
 if not API_KEY:
     raise RuntimeError("GEMINI_API_KEY tanımlı değil")
@@ -18,120 +16,70 @@ GEMINI_API_URL = (
 
 HEADERS = {"Content-Type": "application/json"}
 
-# ============================
-# LOW LEVEL CALL (SAFE)
-# ============================
+
+# ==================================================
+# LOW LEVEL GEMINI CALL (TEK ÇAĞRI, SAFE)
+# ==================================================
 def _call_gemini(prompt: str) -> str:
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
-            "temperature": 0.4,
-            "maxOutputTokens": 1200,
-        },
+            "temperature": 0.3,
+            "maxOutputTokens": 2000
+        }
     }
 
-    try:
-        r = requests.post(
-            GEMINI_API_URL,
-            headers=HEADERS,
-            json=payload,
-            timeout=15,  # 🔥 worker öldürmesin
-        )
-        r.raise_for_status()
-        data = r.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
-
-    except requests.exceptions.Timeout:
-        raise RuntimeError("AI isteği zaman aşımına uğradı")
-
-    except requests.exceptions.RequestException as e:
-        raise RuntimeError(f"AI bağlantı hatası: {e}")
-
-    except Exception as e:
-        # beklenmeyen json shape vs.
-        raise RuntimeError(f"AI cevap parse hatası: {e}")
-
-
-# ============================
-# PARSE ONE QUESTION (ROBUST)
-# ============================
-_LINE = r"[^\n\r]*"
-
-def _find_line(text: str, patterns: List[str]) -> Optional[str]:
-    """
-    Birden fazla pattern dener, ilk eşleşen grubun içeriğini döndürür.
-    Satır bazlı yakalar (DOTALL yok).
-    """
-    for p in patterns:
-        m = re.search(p, text, flags=re.IGNORECASE)
-        if m:
-            return m.group(1).strip()
-    return None
-
-def _normalize(text: str) -> str:
-    # ufak normalize: smart quotes vb.
-    return (
-        text.replace("“", '"')
-            .replace("”", '"')
-            .replace("’", "'")
-            .replace("‘", "'")
-            .strip()
+    r = requests.post(
+        GEMINI_API_URL,
+        headers=HEADERS,
+        json=payload,
+        timeout=20  # gunicorn worker öldürmez
     )
 
-def _parse_question_block(text: str) -> Optional[Dict]:
-    text = _normalize(text)
+    # 🔥 429 VE DİĞER HATALAR BURADA YAKALANIR
+    r.raise_for_status()
 
-    # Soru: satırı (bazı modeller "Soru -" yazabiliyor)
-    question = _find_line(text, [
-        rf"^\s*Soru\s*[:\-]\s*({_LINE})\s*$",
-        rf"\n\s*Soru\s*[:\-]\s*({_LINE})\s*$",
-    ])
+    return r.json()["candidates"][0]["content"]["parts"][0]["text"]
 
-    A = _find_line(text, [
-        rf"^\s*A\)\s*({_LINE})\s*$",
-        rf"\n\s*A\)\s*({_LINE})\s*$",
-    ])
-    B = _find_line(text, [
-        rf"^\s*B\)\s*({_LINE})\s*$",
-        rf"\n\s*B\)\s*({_LINE})\s*$",
-    ])
-    C = _find_line(text, [
-        rf"^\s*C\)\s*({_LINE})\s*$",
-        rf"\n\s*C\)\s*({_LINE})\s*$",
-    ])
-    D = _find_line(text, [
-        rf"^\s*D\)\s*({_LINE})\s*$",
-        rf"\n\s*D\)\s*({_LINE})\s*$",
-    ])
 
-    answer = _find_line(text, [
-        r"^\s*Cevap\s*[:\-]\s*([A-D])\s*$",
-        r"\n\s*Cevap\s*[:\-]\s*([A-D])\s*$",
-    ])
+# ==================================================
+# PARSE SINGLE QUESTION BLOCK
+# ==================================================
+def _parse_question_block(text: str):
+    def find(pattern):
+        m = re.search(pattern, text, re.DOTALL)
+        return m.group(1).strip() if m else None
 
-    # Çözüm bazen çok satır olabilir → burada DOTALL kullanacağız ama sınır koyacağız.
-    m_exp = re.search(r"Çözüm\s*[:\-]\s*(.+)\s*$", text, flags=re.IGNORECASE | re.DOTALL)
-    explanation = m_exp.group(1).strip() if m_exp else None
+    question = find(r"Soru:\s*(.*)")
+    A = find(r"A\)\s*(.*)")
+    B = find(r"B\)\s*(.*)")
+    C = find(r"C\)\s*(.*)")
+    D = find(r"D\)\s*(.*)")
+    answer = find(r"Cevap:\s*([A-D])")
+    explanation = find(r"Çözüm:\s*(.*)")
 
     if not all([question, A, B, C, D, answer, explanation]):
         return None
 
     return {
         "question": question,
-        "choices": [f"A) {A}", f"B) {B}", f"C) {C}", f"D) {D}"],
+        "choices": [
+            f"A) {A}",
+            f"B) {B}",
+            f"C) {C}",
+            f"D) {D}",
+        ],
         "answer": answer,
-        "explanation": explanation,
+        "explanation": explanation
     }
 
 
-# ============================
-# MAIN ENTRY
-# ============================
+# ==================================================
+# MAIN ENTRY — TEK GEMINI ÇAĞRISI
+# ==================================================
 def generate_questions(lesson, topic, difficulty, count):
     count = int(count)
-    questions = []
 
-    # Daha net, sapmayı azaltan prompt
     prompt = f"""
 Sen bir 8. sınıf LGS soru üretme uzmanısın.
 
@@ -139,8 +87,9 @@ Ders: {lesson}
 Konu: {topic}
 Zorluk: {difficulty}
 
-TEK BİR SORU üret ve SADECE şu formatta yaz (başka hiçbir şey yazma):
+AŞAĞIDAKİ FORMATTA TAM OLARAK {count} SORU ÜRET:
 
+Soru 1:
 Soru: ...
 A) ...
 B) ...
@@ -149,26 +98,30 @@ D) ...
 Cevap: A
 Çözüm: ...
 
-Not:
-- Şıklar tek satır olsun.
-- Cevap sadece A/B/C/D harfi olsun.
+Soru 2:
+...
+
+KURALLAR:
+- SADECE BU FORMAT
+- Markdown YOK
+- Açıklama YOK
 """
 
-    attempts = 0
-    max_attempts = max(6, count * 3)  # biraz daha tolerans
+    raw = _call_gemini(prompt)
 
-    while len(questions) < count and attempts < max_attempts:
-        attempts += 1
+    # 🔥 BLOK BLOK AYIR
+    blocks = raw.split("Soru ")
+    questions = []
 
-        raw = _call_gemini(prompt)
-        q = _parse_question_block(raw)
+    for block in blocks:
+        if len(questions) >= count:
+            break
 
+        q = _parse_question_block(block)
         if q:
             questions.append(q)
 
-        time.sleep(0.6)  # rate-limit + stabilite
+    if len(questions) == 0:
+        raise RuntimeError("Model geçerli soru üretemedi")
 
-    if not questions:
-        raise ValueError("Model geçerli soru üretemedi")
-
-    return questions[:count]
+    return questions
