@@ -1,109 +1,95 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import os, time, uuid, threading
+import time
+import requests
 
 app = Flask(__name__)
 
-CORS(
-    app,
-    resources={r"/*": {"origins": ["https://lgssorubankasi.netlify.app"]}},
-    methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type"],
-)
+# ✅ CORS – Netlify için açık
+CORS(app, resources={r"/*": {"origins": "*"}})
 
-# -------------------------
-# In-memory job store
-# -------------------------
-JOBS = {}  # job_id -> {"status": "pending|done|error", "result": [...], "error": "...", "created": ts}
-JOBS_LOCK = threading.Lock()
-JOB_TTL_SEC = 10 * 60  # 10 dk
+# -----------------------------
+# Rate limit (backend tarafı)
+# -----------------------------
+LAST_CALL = 0
+MIN_INTERVAL = 5  # saniye
 
-def _cleanup_jobs():
+def rate_limited():
+    global LAST_CALL
     now = time.time()
-    with JOBS_LOCK:
-        dead = [jid for jid, j in JOBS.items() if now - j["created"] > JOB_TTL_SEC]
-        for jid in dead:
-            del JOBS[jid]
+    if now - LAST_CALL < MIN_INTERVAL:
+        return True
+    LAST_CALL = now
+    return False
 
-def _run_generation(job_id: str, lesson: str, topic: str, difficulty: str, count: int):
-    try:
-        from ai_model import generate_questions
-
-        qs = generate_questions(
-            lesson=lesson,
-            topic=topic,
-            difficulty=difficulty,
-            count=count
-        )
-
-        with JOBS_LOCK:
-            JOBS[job_id]["status"] = "done"
-            JOBS[job_id]["result"] = qs
-
-    except Exception as e:
-        app.logger.exception("LLM generation failed")
-        with JOBS_LOCK:
-            JOBS[job_id]["status"] = "error"
-            JOBS[job_id]["error"] = str(e)
 
 @app.get("/")
 def home():
-    return jsonify({"ok": True, "message": "API alive"})
+    return jsonify({"ok": True, "message": "LGS API running"})
+
 
 @app.route("/generate", methods=["POST", "OPTIONS"])
 def generate():
     if request.method == "OPTIONS":
         return ("", 204)
 
-    _cleanup_jobs()
+    if rate_limited():
+        return jsonify({
+            "ok": False,
+            "error": "Çok hızlı istek. Lütfen birkaç saniye bekleyin.",
+            "retryable": True,
+            "questions": []
+        }), 200
 
     data = request.get_json(silent=True) or {}
-    lesson = (data.get("lesson") or "").strip()
-    topic = (data.get("topic") or "").strip()
-    difficulty = (data.get("difficulty") or "").strip()
-    count_raw = data.get("count")
+
+    lesson = data.get("lesson")
+    topic = data.get("topic")
+    difficulty = data.get("difficulty")
+    count = data.get("count")
+
+    if not all([lesson, topic, difficulty, count]):
+        return jsonify({
+            "ok": False,
+            "error": "Eksik alan",
+            "questions": []
+        }), 200
 
     try:
-        count = int(count_raw)
-    except Exception:
-        return jsonify({"ok": False, "error": "count sayı olmalı"}), 400
+        from ai_model import generate_questions
 
-    if not (lesson and topic and difficulty):
-        return jsonify({"ok": False, "error": "Eksik alan"}), 400
-    if count < 1:
-        return jsonify({"ok": False, "error": "count en az 1"}), 400
-    if count > 10:
-        count = 10
+        questions = generate_questions(
+            lesson=lesson,
+            topic=topic,
+            difficulty=difficulty,
+            count=count
+        )
 
-    job_id = uuid.uuid4().hex
-    with JOBS_LOCK:
-        JOBS[job_id] = {"status": "pending", "result": None, "error": None, "created": time.time()}
+        return jsonify({
+            "ok": True,
+            "questions": questions
+        }), 200
 
-    t = threading.Thread(
-        target=_run_generation,
-        args=(job_id, lesson, topic, difficulty, count),
-        daemon=True
-    )
-    t.start()
+    # 🔥 Gemini 429 / 503 YUMUŞATMA
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code in (429, 503):
+            app.logger.warning("AI temporary unavailable")
+            return jsonify({
+                "ok": False,
+                "retryable": True,
+                "error": "AI servis geçici olarak yoğun. 1-2 dakika sonra tekrar deneyin.",
+                "questions": []
+            }), 200
+        raise
 
-    # 🔥 hemen dön: worker timeout yok
-    return jsonify({"ok": True, "job_id": job_id}), 200
-
-@app.get("/job/<job_id>")
-def job_status(job_id):
-    _cleanup_jobs()
-    with JOBS_LOCK:
-        j = JOBS.get(job_id)
-        if not j:
-            return jsonify({"ok": False, "error": "Job not found"}), 404
-
-        if j["status"] == "done":
-            return jsonify({"ok": True, "status": "done", "questions": j["result"]}), 200
-        if j["status"] == "error":
-            return jsonify({"ok": False, "status": "error", "error": j["error"]}), 200
-
-        return jsonify({"ok": True, "status": "pending"}), 200
+    except Exception as e:
+        app.logger.exception("LLM generation failed")
+        return jsonify({
+            "ok": False,
+            "error": str(e),
+            "questions": []
+        }), 200
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5000")), debug=True)
+    app.run(host="0.0.0.0", port=5000)
